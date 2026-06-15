@@ -16,6 +16,6 @@ spec:
     spec:
       containers:
       - name: nginx
-        image: venky005/cicd-byme:68
+        image: venky005/cicd-byme:69
         ports:
         - containerPort: 80
