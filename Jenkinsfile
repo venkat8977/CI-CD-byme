@@ -76,5 +76,20 @@ pipeline {
                 '''
             }
         }
+
+        stage('Update Manifest') {
+    steps {
+        sh '''
+        sed -i "s|image: .*|image: venky005/cicd-byme:${BUILD_NUMBER}|g" k8s/deployment.yaml
+
+        git config user.email "jenkins@example.com"
+        git config user.name "jenkins"
+
+        git add k8s/deployment.yaml
+        git commit -m "Update image ${BUILD_NUMBER}"
+        git push origin main
+        '''
+            }
+        }
     }
 }
