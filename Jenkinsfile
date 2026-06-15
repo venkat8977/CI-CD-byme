@@ -1,135 +1,132 @@
 pipeline {
-agent any
+    agent any
 
-```
-tools {
-    jdk 'jdk11'
-    maven 'maven3'
-}
-
-environment {
-    SONAR_HOME = tool 'sonar-scanner'
-    IMAGE_NAME = "venky005/cicd-byme"
-    IMAGE_TAG = "${BUILD_NUMBER}"
-}
-
-triggers {
-    pollSCM('* * * * *')
-}
-
-stages {
-
-    stage('Checkout Code') {
-        steps {
-            git branch: 'main',
-                url: 'https://github.com/venkat8977/CI-CD-byme.git',
-                credentialsId: 'github-cred'
-        }
+    tools {
+        jdk 'jdk11'
+        maven 'maven3'
     }
 
-    stage('Build (Maven)') {
-        steps {
-            sh 'mvn clean package'
-        }
+    environment {
+        SONAR_HOME = tool('sonar-scanner')
+        IMAGE_NAME = "venky005/cicd-byme"
+        IMAGE_TAG = "${BUILD_NUMBER}"
     }
 
-    stage('SonarQube Analysis') {
-        steps {
-            withSonarQubeEnv('sonar-server') {
+    triggers {
+        pollSCM('* * * * *')
+    }
+
+    stages {
+
+        stage('Checkout Code') {
+            steps {
+                git branch: 'main',
+                    url: 'https://github.com/venkat8977/CI-CD-byme.git',
+                    credentialsId: 'github-cred'
+            }
+        }
+
+        stage('Build (Maven)') {
+            steps {
+                sh 'mvn clean package'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonar-server') {
+                    sh """
+                        ${SONAR_HOME}/bin/sonar-scanner \
+                        -Dsonar.projectKey=cicd-byme \
+                        -Dsonar.projectName=cicd-byme \
+                        -Dsonar.sources=src \
+                        -Dsonar.java.binaries=target
+                    """
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
                 sh """
-                ${SONAR_HOME}/bin/sonar-scanner \
-                -Dsonar.projectKey=cicd-byme \
-                -Dsonar.projectName=cicd-byme \
-                -Dsonar.sources=src \
-                -Dsonar.java.binaries=target
+                    docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
+                    docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest
                 """
             }
         }
-    }
 
-    stage('Quality Gate') {
-        steps {
-            timeout(time: 5, unit: 'MINUTES') {
-                waitForQualityGate abortPipeline: true
+        stage('Push Docker Image') {
+            steps {
+                withDockerRegistry(
+                    credentialsId: 'docker-cred',
+                    url: 'https://index.docker.io/v1/'
+                ) {
+                    sh """
+                        docker push ${IMAGE_NAME}:${IMAGE_TAG}
+                        docker push ${IMAGE_NAME}:latest
+                    """
+                }
             }
         }
-    }
 
-    stage('Build Docker Image') {
-        steps {
-            sh """
-            docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
-            docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest
-            """
-        }
-    }
-
-    stage('Push Docker Image') {
-        steps {
-            withDockerRegistry(
-                [credentialsId: 'docker-cred',
-                 url: 'https://index.docker.io/v1/']) {
-
+        stage('Deploy Container') {
+            steps {
                 sh """
-                docker push ${IMAGE_NAME}:${IMAGE_TAG}
-                docker push ${IMAGE_NAME}:latest
+                    docker stop cicd-container || true
+                    docker rm cicd-container || true
+
+                    docker run -d \
+                      -p 8081:8080 \
+                      --name cicd-container \
+                      ${IMAGE_NAME}:${IMAGE_TAG}
                 """
             }
         }
-    }
 
-    stage('Deploy Container') {
-        steps {
-            sh """
-            docker stop cicd-container || true
-            docker rm cicd-container || true
+        stage('Update Manifest') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'github-cred',
+                        usernameVariable: 'GIT_USER',
+                        passwordVariable: 'GIT_TOKEN'
+                    )
+                ]) {
 
-            docker run -d \
-              -p 8081:8080 \
-              --name cicd-container \
-              ${IMAGE_NAME}:${IMAGE_TAG}
-            """
-        }
-    }
+                    sh """
+                        sed -i 's|image: .*|image: ${IMAGE_NAME}:${IMAGE_TAG}|g' k8s/deployment.yaml
 
-    stage('Update Manifest') {
-        steps {
-            withCredentials([
-                usernamePassword(
-                    credentialsId: 'github-cred',
-                    usernameVariable: 'GIT_USER',
-                    passwordVariable: 'GIT_TOKEN'
-                )
-            ]) {
+                        git config user.email 'jenkins@example.com'
+                        git config user.name 'jenkins'
 
-                sh """
-                sed -i 's|image: .*|image: ${IMAGE_NAME}:${IMAGE_TAG}|g' k8s/deployment.yaml
+                        git add k8s/deployment.yaml
 
-                git config user.email 'jenkins@example.com'
-                git config user.name 'jenkins'
+                        git commit -m 'Update image ${IMAGE_TAG}' || true
 
-                git add k8s/deployment.yaml
+                        git remote set-url origin https://${GIT_USER}:${GIT_TOKEN}@github.com/venkat8977/CI-CD-byme.git
 
-                git commit -m 'Update image ${IMAGE_TAG}' || true
-
-                git remote set-url origin https://${GIT_USER}:${GIT_TOKEN}@github.com/venkat8977/CI-CD-byme.git
-
-                git push origin main
-                """
+                        git push origin main
+                    """
+                }
             }
         }
     }
-}
 
-post {
-    success {
-        echo 'Pipeline completed successfully'
+    post {
+        success {
+            echo 'Pipeline completed successfully'
+        }
+
+        failure {
+            echo 'Pipeline failed'
+        }
     }
-
-    failure {
-        echo 'Pipeline failed'
-    }
-}
-```
-
 }
